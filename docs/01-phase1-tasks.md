@@ -75,11 +75,32 @@ Task 存储默认使用标准库 `sqlite3`，无需提前引入 ORM、迁移框�
 
 | 提供方 | 提供的能力 | 调用方 |
 | --- | --- | --- |
-| B Repository | `create(task)`、`get(task_id)`、`update_state(...)`；明确返回值、缺失记录与存储异常语义 | A Runtime |
-| C Adapter | `execute(task_type, input_data, thread_id)`；成功返回业务结果，执行异常向 Runtime 传播 | A Runtime |
-| A Runtime | `create_and_run(request)` 返回最终 Task；`get_task(task_id)` 只读查询 | D API |
+| B Repository | `TaskRepository.create(task) -> Task`、`get(task_id) -> Task \| None`、`update_state(...) -> Task` | A Runtime |
+| C Adapter | `WorkflowAdapter.execute(task_type, input_data, thread_id) -> TaskResult` | A Runtime |
+| A Runtime | `TaskRuntime.create_and_run(request) -> TaskResponse`、`get_task(task_id) -> TaskResponse` | D API |
 
 Task 模型和请求/响应模型由 P1-01 先落地，放在同一个明确的模型模块中，不重复定义。LangGraph 的导入和框架配置集中在 Adapter/工作流模块，API 不接触图对象或 Checkpointer。模型、存储和 Adapter 均不直接操作 FastAPI 请求。
+
+### P1-01 已落地的交接接口
+
+共享模型位于 `agentos/models.py`，类型接口与异常位于 `agentos/contracts.py`。B/C/D 应直接导入使用，不另建同名模型。Protocol 用于结构化类型约束和测试替身，不是业务实现，也不要求具体类继承它。
+
+- `CreateTaskRequest` 包含必填的 `task_type`、`input: TaskInput`，两层均禁止额外字段，拒绝客户端传入 task_id、status 或故障开关。文本必须是字符串，去除首尾空白后校验 1–2000 字符。
+- `Task` 是不可变的完整快照，`TaskResponse` 为其别名；ID 在 Python 内使用 UUID，JSON 中输出字符串。时间必须带时区，统一转换为 UTC；更新时间不能早于创建时间，两个 ID 不能相同。
+- `TaskResult` 为 `{text: str}`，`TaskError` 包含固定的 `WORKFLOW_EXECUTION_FAILED` 错误码与安全摘要。SUCCEEDED 必须有结果且无错误，FAILED 必须有错误且无结果，CREATED/RUNNING 两者均为空。
+- 状态变化由后续 Runtime 校验，并重新构造完整、经过校验的 Task；不要用 `model_copy(update=...)` 绕过校验。P1-01 仅校验快照一致性，没有提前实现状态机。
+
+**调用方式：所有 Protocol 方法均为同步 `def`。** D 后续使用 FastAPI 同步路由，并通过依赖函数获取 `TaskRuntime`；如改用异步路由，应将一次完整 Runtime 调用卸载到线程中，不能在事件循环内直接执行阻塞数据库/图调用。
+
+B 的 `update_state` 签名为 `update_state(task_id, *, expected_status, status, updated_at, result=None, error=None) -> Task`。必须以 expected_status 做原子条件更新，更新成功后提交并返回新快照，保留 ID、input、task_type、created_at。记录不存在抛 `TaskNotFoundError`，预期状态不匹配抛 `TaskStateConflictError`，其他数据库失败抛 `TaskStorageError`。Repository 只检查条件写入和快照合法性，合法状态转换规则仍由 Runtime 决定。
+
+Repository 的 `get` 无记录返回 None；Runtime 的 `get_task` 将其转换为 `TaskNotFoundError`。API 将该异常映射为 404，将 `TaskStorageError`（含其子类 TaskStateConflictError）映射为 503。创建接口的字段错误由请求模型校验为 422。Runtime 捕获普通节点异常，持久化 FAILED 后返回任务；捕获 `TaskStorageError` 时继续向外抛出，不伪装为普通工作流失败。
+
+**资源归属：** 后续 A 的具体 Runtime 构造函数接收 Repository、Adapter 两个依赖，API 通过可覆盖的依赖函数获取 Runtime。B 的 sqlite3 连接按操作创建并关闭，建表在应用启动时完成，避免跨线程共享默认连接。C 使用同步 `SqliteSaver.from_conn_string` 的上下文管理器；A 在 lifespan 中借助 ExitStack 持有它，交给 Adapter 使用，关闭时统一释放。Adapter 不自行关闭共享 Checkpointer，将 UUID 转为字符串后传入图配置。Checkpoint 存储失败转换为 `TaskStorageError`，普通节点异常保持原异常传播。
+
+测试时向具体 Runtime 注入实现相同方法的 Repository/Adapter 替身；API 测试覆盖获取 Runtime 的依赖函数。资源持有者负责关闭资源，Runtime 与 API 不重复关闭；P1-04/P1-05 再落地装配与依赖函数，本任务不新增空实现。
+
+依赖按 [LangGraph 包说明](https://pypi.org/project/langgraph/) 和 [SqliteSaver 官方接口](https://reference.langchain.com/python/langgraph.checkpoint.sqlite/SqliteSaver/from_conn_string) 核对。P1-01 新增依赖兼容性测试，仅在临时库中验证同步图调用、跨调用线程访问及关闭后读取 Checkpoint；它不替代 P1-03 的真实 Adapter 与工作流测试。具体安装版本以 `uv.lock` 为准。
 
 ### API 契约
 
