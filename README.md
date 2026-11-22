@@ -2,7 +2,9 @@
 
 AgentOS 是围绕现有 Agent 工作流框架补充任务管理、恢复和工具治理等能力的轻量级运行时项目。正式项目定位与阶段安排见 [项目计划书](docs/00-project-plan.md)。
 
-**当前为阶段 0：只有可运行的基础 API 服务骨架。** 已实现应用工厂、配置、日志和健康检查，附带测试与 CI。尚未实现 Runtime/Task 生命周期、LangGraph/Checkpointer、interrupt/resume、Governance/审批、Scheduler、Memory/去重、审计存储、论文简报工作流、真实 LLM、邮件和 Dashboard。
+**当前 API 仍为基础服务骨架，阶段 1 正在推进。** 已实现应用工厂、配置、日志和健康检查，附带测试与 CI。尚未实现 Runtime/Task 生命周期、业务工作流与 Checkpointer 接入、interrupt/resume、Governance/审批、Scheduler、Memory/去重、审计存储、论文简报工作流、真实 LLM、邮件和 Dashboard。
+
+阶段 1 的 P1-01 已补充共享 Task 模型、请求/响应校验与 Repository/Adapter/Runtime 接口，并安装 LangGraph、SQLite Checkpointer，完成依赖兼容性测试。实际业务存储、图适配器、Runtime 和任务 API 尚待后续任务实现；分工和交接约定见 [阶段 1 任务书](docs/01-phase1-tasks.md)。
 
 ## 环境与安装
 
@@ -13,7 +15,7 @@ uv python install 3.12
 uv sync --locked --dev
 ```
 
-`uv.lock` 锁定依赖，提交仓库；`.venv` 是本地环境，不提交。开发依赖包含 pytest、httpx 和 Ruff。运行依赖仅包含 FastAPI、Uvicorn、Pydantic 和 Pydantic Settings。
+`uv.lock` 锁定依赖，提交仓库；`.venv` 是本地环境，不提交。开发依赖包含 pytest、httpx 和 Ruff。运行依赖包含 FastAPI、Uvicorn、Pydantic、Pydantic Settings，以及阶段 1 使用的 LangGraph 和 SQLite Checkpointer；仅安装依赖不代表已接入业务能力。
 
 本机验证使用 Python 3.12.15、uv 0.13.1。此 Windows 环境中，`uv python install 3.12` 下载了解释器，但创建 minor-version 快捷链接时提示 `Missing expected target directory`；随后 `uv sync --locked --dev` 能找到实际解释器并成功安装，测试与服务启动均通过。如遇相同提示，先执行同步命令确认实际解释器是否可用；若同步仍失败，可自行安装 Python 3.12 后重试。该提示属于本机安装环境限制。
 
@@ -63,6 +65,8 @@ uv run --locked ruff format --check .
 agentos/
   __init__.py
   main.py                 # create_app 应用工厂
+  models.py               # 阶段 1 共享模型与请求响应
+  contracts.py            # 同步接口与异常契约
   api/
     __init__.py
     health.py             # 健康检查路由与响应模型
@@ -71,6 +75,8 @@ agentos/
     config.py             # 统一配置
     logging.py            # 日志初始化
 tests/test_health.py
+tests/test_task_models.py
+tests/test_langgraph_dependencies.py
 docs/00-project-plan.md   # 项目计划书
 .github/workflows/ci.yml
 .env.example
