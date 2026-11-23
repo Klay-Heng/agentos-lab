@@ -341,6 +341,44 @@ def test_get_on_uninitialized_database_raises_storage_error(
         repo.get(uuid4())
 
 
+def test_update_on_unopenable_database_raises_storage_error(tmp_path: Path) -> None:
+    repo = SQLiteTaskRepository(tmp_path / "missing" / "tasks.sqlite3")
+
+    with pytest.raises(TaskStorageError) as caught:
+        repo.update_state(
+            uuid4(),
+            expected_status=TaskStatus.CREATED,
+            status=TaskStatus.RUNNING,
+            updated_at=datetime.now(UTC),
+        )
+
+    assert isinstance(caught.value.__cause__, sqlite3.OperationalError)
+
+
+def test_update_connection_failure_preserves_error_and_snapshot(
+    repository: SQLiteTaskRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task = make_task()
+    repository.create(task)
+    connection_error = sqlite3.OperationalError("unable to open database file")
+
+    def fail_connect() -> sqlite3.Connection:
+        raise connection_error
+
+    with monkeypatch.context() as patch:
+        patch.setattr(repository, "_connect", fail_connect)
+        with pytest.raises(TaskStorageError) as caught:
+            repository.update_state(
+                task.task_id,
+                expected_status=TaskStatus.CREATED,
+                status=TaskStatus.RUNNING,
+                updated_at=task.updated_at + timedelta(seconds=1),
+            )
+
+    assert caught.value.__cause__ is connection_error
+    assert repository.get(task.task_id) == task
+
+
 def test_initialize_wraps_filesystem_errors(tmp_path: Path) -> None:
     blocker = tmp_path / "blocker"
     blocker.write_text("not a directory")

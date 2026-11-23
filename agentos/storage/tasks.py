@@ -109,7 +109,11 @@ class SQLiteTaskRepository:
         result: TaskResult | None = None,
         error: TaskError | None = None,
     ) -> Task:
-        connection = self._connect()
+        try:
+            connection = self._connect()
+        except sqlite3.Error as exc:
+            raise TaskStorageError(f"Could not update task {task_id}") from exc
+
         try:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
