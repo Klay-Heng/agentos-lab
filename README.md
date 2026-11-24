@@ -2,9 +2,9 @@
 
 AgentOS 是围绕现有 Agent 工作流框架补充任务管理、恢复和工具治理等能力的轻量级运行时项目。正式项目定位与阶段安排见 [项目计划书](docs/00-project-plan.md)。
 
-**当前 API 仍为基础服务骨架，阶段 1 正在推进。** 已实现应用工厂、配置、日志和健康检查，附带测试与 CI。尚未实现 Runtime/Task 生命周期、业务工作流与 Checkpointer 接入、interrupt/resume、Governance/审批、Scheduler、Memory/去重、审计存储、论文简报工作流、真实 LLM、邮件和 Dashboard。
+**当前已完成阶段 1 的 P1-01 至 P1-04，任务 HTTP API 尚待 P1-05。** 已实现共享模型、SQLite Task 存储、最小 LangGraph 工作流与 Checkpointer、同步 Runtime 和应用资源装配；现有 HTTP 接口仍只有健康检查。尚未实现 interrupt/resume、Governance/审批、Scheduler、Memory/去重、审计存储、论文简报工作流、真实 LLM、邮件和 Dashboard。
 
-阶段 1 的 P1-01 已补充共享 Task 模型、请求/响应校验与 Repository/Adapter/Runtime 接口，并安装 LangGraph、SQLite Checkpointer，完成依赖兼容性测试。实际业务存储、图适配器、Runtime 和任务 API 尚待后续任务实现；分工和交接约定见 [阶段 1 任务书](docs/01-phase1-tasks.md)。
+Runtime 采用同步调用，通过 `create_and_run` 执行 `CREATED → RUNNING → SUCCEEDED/FAILED`，通过 `get_task` 只读查询。工作流失败保存安全错误摘要；存储失败直接抛出 `TaskStorageError`，保留最后已提交状态。业务数据库与 Checkpoint 分开保存，两者没有跨库原子事务。重启后可查询旧任务，不自动重跑 CREATED/RUNNING 任务，也不承诺崩溃续跑。分工和交接约定见 [阶段 1 任务书](docs/01-phase1-tasks.md)。
 
 ## 环境与安装
 
@@ -32,8 +32,12 @@ macOS/Linux 使用 `cp .env.example .env`。不创建 `.env` 也可直接启动�
 | `AGENTOS_APP_NAME` | `AgentOS` | 应用名称 |
 | `AGENTOS_ENVIRONMENT` | `development` | 运行环境标识 |
 | `AGENTOS_LOG_LEVEL` | `INFO` | DEBUG/INFO/WARNING/ERROR/CRITICAL |
+| `AGENTOS_TASK_DATABASE_PATH` | `data/tasks.sqlite3` | Task 业务数据库 |
+| `AGENTOS_CHECKPOINT_DATABASE_PATH` | `data/checkpoints.sqlite3` | LangGraph Checkpoint 数据库 |
 
 配置从当前工作目录的 `.env` 读取，进程环境变量优先。`.env` 不提交，示例文件不包含密钥。基础日志输出到标准错误；普通日志不代表业务审计能力。
+
+数据库路径在读取 Settings 时解析为绝对路径，两个文件必须不同。应用启动时自动建目录、初始化两库并将 Runtime 放在 `app.state.runtime`；关闭或启动失败时释放 Checkpointer，关闭后移除 Runtime 引用。Task Repository 每次操作独立打开、关闭连接，Runtime 不持有跨图执行的数据库事务。
 
 ## 启动 API
 
@@ -57,7 +61,7 @@ uv run --locked ruff check .
 uv run --locked ruff format --check .
 ```
 
-需要自动格式化时运行 `uv run --locked ruff format .`。测试验证健康检查状态码、JSON 响应结构，以及环境变量和 `.env` 配置优先级。GitHub Actions 在 push 和 pull_request 时运行相同的安装、lint、格式和测试命令。
+需要自动格式化时运行 `uv run --locked ruff format .`。测试覆盖模型、存储、图与 Adapter、Runtime 状态和故障分类、lifespan 资源关闭、重启读取、测试数据隔离及健康检查。测试只使用临时库，并实际进入 lifespan；不访问开发数据库。GitHub Actions 在 push 和 pull_request 时运行相同的安装、lint、格式和测试命令。
 
 ## 代码结构
 
@@ -74,9 +78,11 @@ agentos/
     __init__.py
     config.py             # 统一配置
     logging.py            # 日志初始化
-tests/test_health.py
-tests/test_task_models.py
-tests/test_langgraph_dependencies.py
+  storage/tasks.py        # 按操作管理连接的 Task Repository
+  workflows/demo.py       # 确定性 echo 图
+  adapters/langgraph.py   # 同步图执行适配器
+  runtime/service.py      # Task 状态、执行与查询
+tests/                    # 单元、资源生命周期与真实组件集成测试
 docs/00-project-plan.md   # 项目计划书
 .github/workflows/ci.yml
 .env.example

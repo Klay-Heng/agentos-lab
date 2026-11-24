@@ -178,6 +178,8 @@ Repository 的 `get` 无记录返回 None；Runtime 的 `get_task` 将其转换�
 
 ### P1-05 实现任务 API
 
+P1-04 交接：应用 lifespan 已创建 `RuntimeService(repository, adapter)` 并放入 `app.state.runtime`，关闭时移除。P1-05 应在依赖函数中获取该对象并以 `TaskRuntime` 标注返回类型，使用同步路由调用；测试可覆盖依赖函数。存储路径配置为 `AGENTOS_TASK_DATABASE_PATH` 和 `AGENTOS_CHECKPOINT_DATABASE_PATH`。Runtime 不负责 HTTP 异常映射，本任务仍由 API 层实现 404/422/503。
+
 - **负责人：D；评审：A。依赖：P1-01，最终联调依赖 P1-04。**
 - 建议代码范围：`agentos/api/tasks.py`、路由注册和 `tests/test_tasks.py`。
 - 实现创建、查询及响应模型，调用 Runtime；异常映射遵守 API 契约，路由中不写 SQL、图执行或状态转换逻辑。
