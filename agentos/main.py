@@ -1,7 +1,6 @@
 """FastAPI application factory."""
 
 import logging
-import sqlite3
 from contextlib import ExitStack, asynccontextmanager
 
 from fastapi import FastAPI
@@ -37,9 +36,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
                 saver.setup()
                 adapter = LangGraphWorkflowAdapter(saver)
-            except (OSError, sqlite3.Error) as exc:
-                raise TaskStorageError("Could not initialize runtime storage") from exc
-            app.state.runtime = RuntimeService(repository, adapter)
+                runtime = RuntimeService(repository, adapter)
+            except Exception as exc:
+                # Normalize assembly failures; errors after yield keep their semantics.
+                raise TaskStorageError("Could not initialize runtime") from exc
+            app.state.runtime = runtime
             try:
                 yield
             finally:

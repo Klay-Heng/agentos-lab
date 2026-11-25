@@ -1,5 +1,6 @@
 """Real application resources: execution, persistence, cleanup and isolation."""
 
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -120,8 +121,20 @@ async def test_restart_preserves_intermediate_task_without_execution(tmp_path, s
         )
 
 
-async def test_startup_failure_closes_acquired_saver(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("stage", "failure_type"),
+    [
+        ("adapter", sqlite3.OperationalError),
+        ("adapter", RuntimeError),
+        ("adapter", ValueError),
+        ("runtime", RuntimeError),
+    ],
+)
+async def test_startup_failure_closes_acquired_saver(
+    tmp_path, monkeypatch, stage, failure_type
+):
     from agentos.adapters.langgraph import LangGraphWorkflowAdapter
+    from agentos.runtime.service import RuntimeService
 
     connections = []
     original = SqliteSaver.from_conn_string
@@ -132,18 +145,42 @@ async def test_startup_failure_closes_acquired_saver(tmp_path, monkeypatch):
             connections.append(saver.conn)
             yield saver
 
+    failure = failure_type("setup failed")
+
     def fail(*args):
-        raise sqlite3.OperationalError("setup failed")
+        raise failure
 
     monkeypatch.setattr(SqliteSaver, "from_conn_string", track)
-    monkeypatch.setattr(LangGraphWorkflowAdapter, "__init__", fail)
+    component = LangGraphWorkflowAdapter if stage == "adapter" else RuntimeService
+    monkeypatch.setattr(component, "__init__", fail)
     app = create_app(settings_for(tmp_path))
-    with pytest.raises(TaskStorageError):
+    with pytest.raises(
+        TaskStorageError, match="Could not initialize runtime"
+    ) as caught:
         async with app.router.lifespan_context(app):
             pytest.fail("startup should fail")
+    assert caught.value.__cause__ is failure
     assert not hasattr(app.state, "runtime")
     with pytest.raises(sqlite3.ProgrammingError):
         connections[0].execute("SELECT 1")
+
+
+async def test_repository_startup_failure_has_consistent_wrapper(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    failure = TaskStorageError("repository unavailable")
+    monkeypatch.setattr(SQLiteTaskRepository, "initialize", Mock(side_effect=failure))
+    open_saver = Mock()
+    monkeypatch.setattr(SqliteSaver, "from_conn_string", open_saver)
+    app = create_app(settings_for(tmp_path))
+    with pytest.raises(
+        TaskStorageError, match="Could not initialize runtime"
+    ) as caught:
+        async with app.router.lifespan_context(app):
+            pytest.fail("startup should fail")
+    assert caught.value.__cause__ is failure
+    assert not hasattr(app.state, "runtime")
+    open_saver.assert_not_called()
 
 
 async def test_shutdown_on_application_error_closes_saver(tmp_path, monkeypatch):
@@ -177,5 +214,15 @@ async def test_settings_resolve_paths_and_reject_shared_file(tmp_path, monkeypat
         Settings(
             task_database_path="same.sqlite3",
             checkpoint_database_path="./same.sqlite3",
+            _env_file=None,
+        )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path comparison semantics")
+async def test_settings_reject_windows_case_variants(tmp_path):
+    with pytest.raises(ValidationError, match="must use separate files"):
+        Settings(
+            task_database_path=tmp_path / "Tasks.sqlite3",
+            checkpoint_database_path=tmp_path / "tasks.sqlite3",
             _env_file=None,
         )
