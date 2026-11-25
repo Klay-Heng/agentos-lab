@@ -1,13 +1,18 @@
 """FastAPI application factory."""
 
 import logging
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 
 from fastapi import FastAPI
+from langgraph.checkpoint.sqlite import SqliteSaver
 
+from agentos.adapters.langgraph import LangGraphWorkflowAdapter
 from agentos.api.health import router as health_router
+from agentos.contracts import TaskStorageError
 from agentos.core.config import Settings
 from agentos.core.logging import configure_logging
+from agentos.runtime.service import RuntimeService
+from agentos.storage.tasks import SQLiteTaskRepository
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +24,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         configure_logging(settings.log_level)
         logger.info("Starting %s API (%s)", settings.app_name, settings.environment)
-        yield
-        logger.info("Stopping %s API", settings.app_name)
+        with ExitStack() as resources:
+            try:
+                repository = SQLiteTaskRepository(settings.task_database_path)
+                repository.initialize()
+                settings.checkpoint_database_path.parent.mkdir(
+                    parents=True, exist_ok=True
+                )
+                saver = resources.enter_context(
+                    SqliteSaver.from_conn_string(str(settings.checkpoint_database_path))
+                )
+                saver.setup()
+                adapter = LangGraphWorkflowAdapter(saver)
+                runtime = RuntimeService(repository, adapter)
+            except Exception as exc:
+                # Normalize assembly failures; errors after yield keep their semantics.
+                raise TaskStorageError("Could not initialize runtime") from exc
+            app.state.runtime = runtime
+            try:
+                yield
+            finally:
+                del app.state.runtime
+                logger.info("Stopping %s API", settings.app_name)
 
     app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
     app.state.settings = settings

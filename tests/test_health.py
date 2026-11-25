@@ -9,15 +9,33 @@ from agentos.main import create_app
 pytestmark = pytest.mark.anyio
 
 
+@pytest.fixture(autouse=True)
+def isolate_storage(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTOS_TASK_DATABASE_PATH", str(tmp_path / "tasks.sqlite3"))
+    monkeypatch.setenv(
+        "AGENTOS_CHECKPOINT_DATABASE_PATH", str(tmp_path / "checkpoints.sqlite3")
+    )
+
+
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
 
 
-async def test_health_contract():
-    settings = Settings(app_name="AgentOS Test", environment="test", _env_file=None)
-    transport = httpx.ASGITransport(app=create_app(settings))
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+async def test_health_contract(tmp_path):
+    settings = Settings(
+        app_name="AgentOS Test",
+        environment="test",
+        _env_file=None,
+        task_database_path=tmp_path / "tasks.sqlite3",
+        checkpoint_database_path=tmp_path / "checkpoints.sqlite3",
+    )
+    app = create_app(settings)
+    transport = httpx.ASGITransport(app=app)
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=transport, base_url="http://test") as client,
+    ):
         response = await client.get("/api/v1/health")
 
     assert response.status_code == 200
@@ -34,8 +52,12 @@ async def test_factory_reads_environment(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENTOS_APP_NAME", "Environment API")
     monkeypatch.setenv("AGENTOS_ENVIRONMENT", "staging")
 
-    transport = httpx.ASGITransport(app=create_app())
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=transport, base_url="http://test") as client,
+    ):
         response = await client.get("/api/v1/health")
 
     assert response.status_code == 200
@@ -56,8 +78,12 @@ async def test_dotenv_and_environment_precedence(monkeypatch, tmp_path):
     )
     monkeypatch.setenv("AGENTOS_ENVIRONMENT", "test")
 
-    transport = httpx.ASGITransport(app=create_app())
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=transport, base_url="http://test") as client,
+    ):
         response = await client.get("/api/v1/health")
 
     assert response.status_code == 200

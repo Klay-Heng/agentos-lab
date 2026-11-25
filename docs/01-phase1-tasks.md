@@ -100,6 +100,8 @@ Repository 的 `get` 无记录返回 None；Runtime 的 `get_task` 将其转换�
 
 测试时向具体 Runtime 注入实现相同方法的 Repository/Adapter 替身；API 测试覆盖获取 Runtime 的依赖函数。资源持有者负责关闭资源，Runtime 与 API 不重复关闭；P1-04/P1-05 再落地装配与依赖函数，本任务不新增空实现。
 
+P1-04 启动约定：Repository、Checkpointer、Adapter 与 Runtime 初始化阶段的普通异常统一包装为 `TaskStorageError`，保留原异常链并由 ExitStack 释放已取得的资源；包装范围不包含 lifespan 的运行阶段，也不捕获进程中止类异常。后续阶段 2 扩展 `task_type` 前，需先约定类型与 Adapter 注册关系的前置校验：不支持的类型或缺失执行映射须在 CREATED 落库前拒绝，不应将 Adapter 的 `ValueError("Unsupported task type")` 记为普通工作流失败；届时同步更新接口和任务书，本轮不改变执行代码。
+
 依赖按 [LangGraph 包说明](https://pypi.org/project/langgraph/) 和 [SqliteSaver 官方接口](https://reference.langchain.com/python/langgraph.checkpoint.sqlite/SqliteSaver/from_conn_string) 核对。P1-01 新增依赖兼容性测试，仅在临时库中验证同步图调用、跨调用线程访问及关闭后读取 Checkpoint；它不替代 P1-03 的真实 Adapter 与工作流测试。具体安装版本以 `uv.lock` 为准。
 
 ### API 契约
@@ -177,6 +179,8 @@ Repository 的 `get` 无记录返回 None；Runtime 的 `get_task` 将其转换�
 - **验收：** 真实 Repository + Adapter 的成功链路可执行；替换为失败 Adapter 时持久化 FAILED；非法终态转换被拒绝；资源随应用关闭。进程异常退出留下的中间状态不被误标成功或自动重试。
 
 ### P1-05 实现任务 API
+
+P1-04 交接：应用 lifespan 已创建 `RuntimeService(repository, adapter)` 并放入 `app.state.runtime`，关闭时移除。P1-05 应在依赖函数中获取该对象并以 `TaskRuntime` 标注返回类型，使用同步路由调用；测试可覆盖依赖函数。存储路径配置为 `AGENTOS_TASK_DATABASE_PATH` 和 `AGENTOS_CHECKPOINT_DATABASE_PATH`。Runtime 不负责 HTTP 异常映射，本任务仍由 API 层实现 404/422/503。
 
 - **负责人：D；评审：A。依赖：P1-01，最终联调依赖 P1-04。**
 - 建议代码范围：`agentos/api/tasks.py`、路由注册和 `tests/test_tasks.py`。
